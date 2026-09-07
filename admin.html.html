@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>One Suntory Walk - 後台管理審核</title>
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+  <!-- Excel 匯出專用套件 (SheetJS) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: #f4f7f6; color: #333; padding: 24px; }
+    .container { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+    header { background: #003049; color: white; padding: 16px 24px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; }
+    .card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-top: 12px; }
+    .review-card { border: 1px solid #e0e0e0; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px; background: #fff; }
+    .review-card img { width: 100%; height: 160px; object-fit: contain; background: #222; border-radius: 6px; cursor: pointer; }
+    .btn { padding: 8px 14px; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 0.82rem; }
+    .btn-approve { background: #2ec4b6; color: white; }
+    .btn-reject { background: #e76f51; color: white; }
+    .btn-excel { background: #2a9d8f; color: white; display: inline-flex; align-items: center; gap: 6px; }
+    .btn-excel:hover { background: #21867a; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.88rem; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid #eee; text-align: left; }
+    th { background: #f8f9fa; color: #555; }
+    .badge { display: inline-block; padding: 4px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 700; }
+    .b-approved { background: #d8f3dc; color: #2d6a4f; }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <h2>💧 One Suntory Walk 管理後台</h2>
+      <button class="btn btn-excel" onclick="exportToExcel()">📥 匯出 Excel 總表</button>
+    </header>
+
+    <!-- 待審核區塊 -->
+    <div class="card">
+      <h3>⏳ 待審核清單 (<span id="pendingCount">0</span>)</h3>
+      <div class="grid" id="pendingGrid"></div>
+    </div>
+
+    <!-- 全體同仁進度總表 -->
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h3>📊 員工闖關進度總表</h3>
+        <span style="font-size:0.85rem; color:#666;">點擊上方綠色按鈕即可一鍵匯出名單</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>工號</th>
+            <th>姓名</th>
+            <th>W1 微露</th>
+            <th>W2 湧泉</th>
+            <th>W3 大河</th>
+            <th>W4 海洋</th>
+            <th>大滿貫資格</th>
+          </tr>
+        </thead>
+        <tbody id="userTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    // ⚠️ 請填入相同的 Firebase 設定
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    // 暫存資料以供匯出使用
+    let globalUsers = {};
+
+    // 即時監聽所有提交
+    db.collection('submissions').onSnapshot(snapshot => {
+      const items = [];
+      const users = {};
+
+      snapshot.forEach(doc => {
+        const d = doc.data();
+        d.docId = doc.id;
+        items.push(d);
+
+        if(!users[d.empId]) users[d.empId] = { name: d.empName, w1:'-', w2:'-', w3:'-', w4:'-' };
+        users[d.empId][`w${d.week}`] = d.status;
+      });
+
+      globalUsers = users;
+      renderPending(items.filter(i => i.status === 'pending'));
+      renderTable(users);
+    });
+
+    function renderPending(pendingList) {
+      document.getElementById('pendingCount').textContent = pendingList.length;
+      const grid = document.getElementById('pendingGrid');
+      if(pendingList.length === 0) {
+        grid.innerHTML = '<p style="color:#888;">目前沒有待審核的項目。</p>';
+        return;
+      }
+      grid.innerHTML = pendingList.map(item => `
+        <div class="review-card">
+          <div style="display:flex; justify-content:space-between; font-weight:700;">
+            <span>${item.empName} (${item.empId})</span>
+            <span style="color:#0077b6;">WEEK ${item.week}</span>
+          </div>
+          <img src="${item.imgUrl}" onclick="window.open('${item.imgUrl}')" title="點擊放大">
+          <div style="display:flex; gap:8px; margin-top:4px;">
+            <button class="btn btn-approve" style="flex:1;" onclick="updateStatus('${item.docId}', 'approved')">✓ 通過蓋章</button>
+            <button class="btn btn-reject" style="flex:1;" onclick="updateStatus('${item.docId}', 'rejected')">✕ 駁回</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function renderTable(users) {
+      const tbody = document.getElementById('userTableBody');
+      tbody.innerHTML = Object.keys(users).map(empId => {
+        const u = users[empId];
+        const isGrand = (u.w1 === 'approved' && u.w2 === 'approved' && u.w3 === 'approved' && u.w4 === 'approved');
+        return `
+          <tr>
+            <td><strong>${empId}</strong></td>
+            <td>${u.name}</td>
+            <td>${u.w1 === 'approved' ? '✓' : u.w1}</td>
+            <td>${u.w2 === 'approved' ? '✓' : u.w2}</td>
+            <td>${u.w3 === 'approved' ? '✓' : u.w3}</td>
+            <td>${u.w4 === 'approved' ? '✓' : u.w4}</td>
+            <td>${isGrand ? '<span class="badge b-approved">🎁 獲得抽獎資格</span>' : '<span style="color:#aaa;">未達標</span>'}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function updateStatus(docId, status) {
+      db.collection('submissions').doc(docId).update({ status });
+    }
+
+    // 匯出 Excel 功能
+    function exportToExcel() {
+      const exportData = Object.keys(globalUsers).map(empId => {
+        const u = globalUsers[empId];
+        const isGrand = (u.w1 === 'approved' && u.w2 === 'approved' && u.w3 === 'approved' && u.w4 === 'approved');
+        return {
+          "員工工號": empId,
+          "同仁姓名": u.name,
+          "Week 1 健康啟程": u.w1 === 'approved' ? '通過' : (u.w1 === 'pending' ? '審核中' : '未達標'),
+          "Week 2 公益應援": u.w2 === 'approved' ? '通過' : (u.w2 === 'pending' ? '審核中' : '未達標'),
+          "Week 3 攜手共步": u.w3 === 'approved' ? '通過' : (u.w3 === 'pending' ? '審核中' : '未達標'),
+          "Week 4 破曉希望": u.w4 === 'approved' ? '通過' : (u.w4 === 'pending' ? '審核中' : '未達標'),
+          "大滿貫底片相機抽獎資格": isGrand ? '符合資格' : '未符合'
+        };
+      });
+
+      if(exportData.length === 0) {
+        return alert("目前尚無任何打卡數據可供匯出！");
+      }
+
+      // 建立工作表與下載檔案
+      const worksheet = XLSX.utils.json_to_sheet(exportData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "健走成果清單");
+
+      const today = new Date().toISOString().split('T')[0];
+      XLSX.writeFile(workbook, `One_Suntory_Walk_進度總表_${today}.xlsx`);
+    }
+  </script>
+</body>
+</html>

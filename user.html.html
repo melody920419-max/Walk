@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>One Suntory Walk - 員工集點卡</title>
+  <!-- Firebase SDK (Compat 穩定版) -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-storage-compat.js"></script>
+
+  <style>
+    :root {
+      --bg-start: #0f382c;
+      --bg-mid: #005f73;
+      --bg-end: #00121e;
+      --accent: #00e5ff;
+      --gold: #ffd166;
+      --stamp-color: #00f0ff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: linear-gradient(180deg, var(--bg-start) 0%, var(--bg-mid) 45%, var(--bg-end) 100%); color: #fff; min-height: 100vh; display: flex; justify-content: center; padding: 16px 12px 40px; }
+    .container { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 14px; }
+    
+    .header { background: rgba(255, 255, 255, 0.1); border-radius: 16px; padding: 16px; text-align: center; border: 1px solid rgba(255,255,255,0.2); }
+    .user-profile { display: flex; gap: 8px; margin-top: 10px; }
+    .user-profile input { flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.3); background: rgba(0,0,0,0.35); color: #fff; font-size: 0.78rem; outline: none; }
+    .user-profile input::placeholder { color: rgba(255, 255, 255, 0.6); }
+
+    /* 集點卡 */
+    .stamp-board { background: rgba(0, 0, 0, 0.35); border: 2px dashed rgba(255, 255, 255, 0.25); border-radius: 18px; padding: 14px 10px; text-align: center; }
+    .stamp-slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
+    .stamp-slot { aspect-ratio: 1; border-radius: 50%; border: 2px dashed rgba(255, 255, 255, 0.3); display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(255, 255, 255, 0.05); position: relative; overflow: hidden; }
+    .stamp-mark { position: absolute; width: 100%; height: 100%; border-radius: 50%; border: 3px double var(--stamp-color); background: rgba(0, 240, 255, 0.15); color: var(--stamp-color); display: flex; flex-direction: column; justify-content: center; align-items: center; opacity: 0; }
+    .stamp-slot.stamped .stamp-mark { opacity: 1; transform: rotate(-12deg); animation: stampDrop 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+    .stamp-slot.stamped { border: 2px solid var(--accent); box-shadow: 0 0 10px rgba(0, 229, 255, 0.4); }
+
+    @keyframes stampDrop { 0% { opacity: 0; transform: scale(3) rotate(-35deg); } 100% { opacity: 1; transform: scale(1) rotate(-12deg); } }
+
+    /* 任務卡片 */
+    .task-card { background: rgba(255, 255, 255, 0.08); border-radius: 14px; padding: 14px; border: 1px solid rgba(255, 255, 255, 0.15); display: flex; justify-content: space-between; align-items: center; }
+    .task-card.approved { background: rgba(0, 95, 115, 0.45); border-color: var(--accent); }
+    .task-info { max-width: 65%; display: flex; flex-direction: column; gap: 2px; }
+    .btn-action { background: linear-gradient(135deg, #00b4d8, #0077b6); color: #fff; border: none; padding: 8px 12px; border-radius: 20px; font-size: 0.78rem; font-weight: 700; cursor: pointer; }
+    .status-badge { font-size: 0.72rem; padding: 6px 10px; border-radius: 12px; font-weight: 700; }
+    .badge-pending { background: #e76f51; color: white; }
+    .badge-approved { background: #2ec4b6; color: white; }
+
+    /* 上傳彈窗 Modal */
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); justify-content: center; align-items: center; padding: 20px; z-index: 99; }
+    .modal.active { display: flex; }
+    .modal-content { background: #002b36; border: 1px solid var(--accent); border-radius: 16px; padding: 20px; width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 12px; }
+    .preview-box { width: 100%; height: 130px; border: 1px dashed rgba(255,255,255,0.4); border-radius: 8px; display: flex; justify-content: center; align-items: center; overflow: hidden; font-size: 0.8rem; color: #aaa; background: rgba(0,0,0,0.2); }
+    .preview-box img { width: 100%; height: 100%; object-fit: contain; }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header class="header">
+      <h2>💧 One Suntory Walk</h2>
+      <p style="font-size:0.8rem; color:#94d2bd; margin-top:4px;">上傳健走證明，點亮希望之水</p>
+      <div class="user-profile">
+        <input type="text" id="empId" placeholder="輸入員工編號 Employee Number" oninput="handleEmpIdInput()">
+        <input type="text" id="empName" placeholder="輸入姓名 Name" oninput="saveUserData()">
+      </div>
+    </header>
+
+    <!-- 集點卡 -->
+    <div class="stamp-board">
+      <div style="display:flex; justify-content:space-between; font-size:0.85rem; color:var(--gold);">
+        <span>🗺️ 水資源集點卡</span>
+        <span id="stampCounter">集點進度 0 / 4</span>
+      </div>
+      <div class="stamp-slots">
+        <div class="stamp-slot" id="slot-1"><span style="font-size:0.75rem;">W1</span><div class="stamp-mark"><span>🌱</span><span style="font-size:0.5rem;">HEALTH</span></div></div>
+        <div class="stamp-slot" id="slot-2"><span style="font-size:0.75rem;">W2</span><div class="stamp-mark"><span>💧</span><span style="font-size:0.5rem;">WATER</span></div></div>
+        <div class="stamp-slot" id="slot-3"><span style="font-size:0.75rem;">W3</span><div class="stamp-mark"><span>🤝</span><span style="font-size:0.5rem;">TOGETHER</span></div></div>
+        <div class="stamp-slot" id="slot-4"><span style="font-size:0.75rem;">W4</span><div class="stamp-mark"><span>🌎</span><span style="font-size:0.5rem;">CHANGE</span></div></div>
+      </div>
+    </div>
+
+    <!-- 任務清單 -->
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      <div class="task-card" id="card-1">
+        <div class="task-info">
+          <span style="font-size:0.7rem; color:#94d2bd;">WEEK 1</span>
+          <span style="font-weight:700; font-size:0.9rem;">晨光微露 🌱</span>
+          <span style="font-size:0.72rem; opacity:0.8;">一週打卡 3 天滿 6,000 步</span>
+        </div>
+        <div id="action-1"><button class="btn-action" onclick="openUploadModal(1)">上傳截圖</button></div>
+      </div>
+
+      <div class="task-card" id="card-2">
+        <div class="task-info">
+          <span style="font-size:0.7rem; color:#94d2bd;">WEEK 2</span>
+          <span style="font-weight:700; font-size:0.9rem;">清澈湧泉 💧</span>
+          <span style="font-size:0.72rem; opacity:0.8;">單日完成 6km 健走</span>
+        </div>
+        <div id="action-2"><button class="btn-action" onclick="openUploadModal(2)">上傳截圖</button></div>
+      </div>
+
+      <div class="task-card" id="card-3">
+        <div class="task-info">
+          <span style="font-size:0.7rem; color:#94d2bd;">WEEK 3</span>
+          <span style="font-weight:700; font-size:0.9rem;">奔流大河 🤝</span>
+          <span style="font-size:0.72rem; opacity:0.8;">與同事一起完成一次健走</span>
+        </div>
+        <div id="action-3"><button class="btn-action" onclick="openUploadModal(3)">上傳截圖</button></div>
+      </div>
+
+      <div class="task-card" id="card-4">
+        <div class="task-info">
+          <span style="font-size:0.7rem; color:#94d2bd;">WEEK 4</span>
+          <span style="font-weight:700; font-size:0.9rem;">蔚藍海洋 🌎</span>
+          <span style="font-size:0.72rem; opacity:0.8;">清晨/傍晚 30分快走＋拍天空</span>
+        </div>
+        <div id="action-4"><button class="btn-action" onclick="openUploadModal(4)">上傳截圖</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 上傳 Modal -->
+  <div class="modal" id="uploadModal">
+    <div class="modal-content">
+      <h3 style="font-size:1rem; color:var(--accent);" id="modalTitle">上傳證明截圖</h3>
+      <input type="file" id="fileInput" accept="image/*" onchange="handleFilePreview(event)">
+      <div class="preview-box" id="previewBox">截圖預覽區</div>
+      <div style="display:flex; gap:8px;">
+        <button style="flex:1; padding:8px; border-radius:8px; border:none; background:#555; color:white;" onclick="closeModal()">取消</button>
+        <button id="btnSubmit" style="flex:1; padding:8px; border-radius:8px; border:none; background:var(--accent); color:#000; font-weight:700;" onclick="submitProof()">提交審核</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ⚠️ 請替換為你的 Firebase 配置
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    const storage = firebase.storage();
+
+    let currentWeek = 1;
+    let selectedFile = null;
+    let unsubscribe = null;
+
+    // 頁面初次載入，自動讀取上次存留的員工編號與姓名
+    window.onload = function() {
+      const savedEmpId = localStorage.getItem('suntory_empId');
+      if (savedEmpId) {
+        document.getElementById('empId').value = savedEmpId;
+        const savedName = localStorage.getItem(`suntory_name_${savedEmpId}`) || '';
+        document.getElementById('empName').value = savedName;
+        initUserSync();
+      }
+    };
+
+    function handleEmpIdInput() {
+      const empId = document.getElementById('empId').value.trim();
+      localStorage.setItem('suntory_empId', empId);
+      
+      const savedName = localStorage.getItem(`suntory_name_${empId}`) || '';
+      document.getElementById('empName').value = savedName;
+
+      initUserSync();
+    }
+
+    function saveUserData() {
+      const empId = document.getElementById('empId').value.trim();
+      const empName = document.getElementById('empName').value.trim();
+      if (empId) {
+        localStorage.setItem(`suntory_name_${empId}`, empName);
+      }
+    }
+
+    function openUploadModal(week) {
+      const empId = document.getElementById('empId').value.trim();
+      if (!empId) return alert('請先輸入員工編號！');
+      currentWeek = week;
+      document.getElementById('modalTitle').textContent = `上傳 WEEK ${week} 任務截圖`;
+      document.getElementById('previewBox').innerHTML = '截圖預覽區';
+      document.getElementById('fileInput').value = '';
+      selectedFile = null;
+      document.getElementById('uploadModal').classList.add('active');
+    }
+
+    function closeModal() {
+      document.getElementById('uploadModal').classList.remove('active');
+    }
+
+    function handleFilePreview(e) {
+      selectedFile = e.target.files[0];
+      if (selectedFile) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          document.getElementById('previewBox').innerHTML = `<img src="${event.target.result}">`;
+        };
+        reader.readAsDataURL(selectedFile);
+      }
+    }
+
+    // 原生 Canvas 極速硬體壓縮（0.1~0.2 秒完成，無第三方套件當機風險）
+    function fastCompressImage(file, maxWidth = 800, quality = 0.7) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (event) => {
+          const img = new Image();
+          img.src = event.target.result;
+          img.onload = () => {
+            let width = img.width;
+            let height = img.height;
+
+            if (width > maxWidth) {
+              height = Math.round((height * maxWidth) / width);
+              width = maxWidth;
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+
+            canvas.toBlob((blob) => {
+              if (blob) resolve(blob);
+              else reject(new Error('圖片壓縮轉換失敗'));
+            }, 'image/jpeg', quality);
+          };
+          img.onerror = (err) => reject(err);
+        };
+        reader.onerror = (err) => reject(err);
+      });
+    }
+
+    async function submitProof() {
+      if (!selectedFile) return alert('請先選擇截圖！');
+      const empId = document.getElementById('empId').value.trim();
+      const empName = document.getElementById('empName').value.trim() || '未填寫';
+      const btn = document.getElementById('btnSubmit');
+
+      try {
+        btn.textContent = '圖片極速優化中...';
+        btn.disabled = true;
+
+        // 1. 原生極速壓縮
+        const compressedBlob = await fastCompressImage(selectedFile);
+
+        btn.textContent = '上傳中...';
+
+        // 2. 直傳 Firebase Storage
+        const fileName = `proofs/${empId}_week${currentWeek}_${Date.now()}.jpg`;
+        const fileRef = storage.ref(fileName);
+        const uploadTask = await fileRef.put(compressedBlob);
+        const imgUrl = await uploadTask.ref.getDownloadURL();
+
+        btn.textContent = '更新進度中...';
+
+        // 3. 寫入 Firestore 資料庫
+        await db.collection('submissions').doc(`${empId}_W${currentWeek}`).set({
+          empId,
+          empName,
+          week: currentWeek,
+          imgUrl,
+          status: 'pending',
+          updateTime: firebase.firestore.FieldValue.serverTimestamp()
+        });
+
+        alert('🎉 上傳成功！請等待主辦單位審核。');
+        closeModal();
+      } catch (err) {
+        console.error('上傳錯誤:', err);
+        alert(`上傳失敗：\n${err.message || err}\n\n請確認 Firebase Storage 與 Firestore 權限 Rules 已開啟讀寫。`);
+      } finally {
+        btn.textContent = '提交審核';
+        btn.disabled = false;
+      }
+    }
+
+    function initUserSync() {
+      const empId = document.getElementById('empId').value.trim();
+      if (!empId) {
+        renderUI({});
+        return;
+      }
+
+      if (unsubscribe) unsubscribe();
+
+      unsubscribe = db.collection('submissions')
+        .where('empId', '==', empId)
+        .onSnapshot(snapshot => {
+          const userTasks = {};
+          snapshot.forEach(doc => {
+            const data = doc.data();
+            userTasks[data.week] = data.status;
+          });
+          renderUI(userTasks);
+        });
+    }
+
+    function renderUI(tasks) {
+      let approvedCount = 0;
+      for (let w = 1; w <= 4; w++) {
+        const slot = document.getElementById(`slot-${w}`);
+        const card = document.getElementById(`card-${w}`);
+        const actionArea = document.getElementById(`action-${w}`);
+        const status = tasks[w];
+
+        slot.classList.remove('stamped');
+        card.classList.remove('approved');
+
+        if (!status) {
+          actionArea.innerHTML = `<button class="btn-action" onclick="openUploadModal(${w})">上傳截圖</button>`;
+        } else if (status === 'pending') {
+          actionArea.innerHTML = `<span class="status-badge badge-pending">審核中</span>`;
+        } else if (status === 'approved') {
+          actionArea.innerHTML = `<span class="status-badge badge-approved">✓ 已通過</span>`;
+          slot.classList.add('stamped');
+          card.classList.add('approved');
+          approvedCount++;
+        } else if (status === 'rejected') {
+          actionArea.innerHTML = `<button class="btn-action" style="background:#e76f51;" onclick="openUploadModal(${w})">已駁回(重傳)</button>`;
+        }
+      }
+      document.getElementById('stampCounter').textContent = `集點進度 ${approvedCount} / 4`;
+    }
+  </script>
+</body>
+</html>
